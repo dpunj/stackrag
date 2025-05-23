@@ -306,7 +306,7 @@ async def query_llm(
         }
     
     try:
-        search_query = transform_query_for_search(prompt)
+        search_query = transform_query_for_search(prompt, client, model)
         query_embedding_response = client.embeddings.create(
             model=embedding_model,
             inputs=[search_query]
