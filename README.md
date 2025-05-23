@@ -9,7 +9,8 @@ Simple FastAPI backend for a RAG pipeline that processes PDFs and answers questi
 - **Query processing**: Classifies query intent to skip RAG when unnecessary (e.g., greetings, chitchat)
   - If classified as RAG, the user query is transformed to enhance retrieval
 - **Semantic search**: Uses vector embeddings to find relevant document sections
-  - If we wanted to incpororate keyword search we could use BM25 and use a hybrid search method that combines both
+  - If we wanted to incorporate keyword search we could use BM25 and use a hybrid search method
+  - We could then use a reranker that merges and reorders results based on the query
 - **RAG**: Generates answers based on the retrieved chunks
 
 ### Stack
