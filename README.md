@@ -2,6 +2,8 @@
 
 Simple FastAPI backend for a RAG pipeline that processes PDFs and answers questions with Mistral AI.
 
+![Diagram](images/diagram.png)
+
 ## Features
 
 - **PDF processing**: extracts and chunks text from PDFs
@@ -38,3 +40,7 @@ uv pip install -r requirements.txt
 ```bash
 fastapi dev main.py
 ```
+
+1. Open `localhost:8000/docs`
+2. Upload PDF via `/upload`
+3. Chat with ingested PDFs via `/query`
