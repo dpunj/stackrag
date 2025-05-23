@@ -3,7 +3,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, Query
 from mistralai import Mistral
 import fitz
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
+from enum import Enum
 import numpy as np
 import logging
 
@@ -21,6 +22,85 @@ app = FastAPI(
 )
 
 logger = logging.getLogger(__name__)
+
+class QueryIntent(Enum):
+    GREETING = "greeting"
+    KNOWLEDGE_QUERY = "knowledge_query"
+    CHITCHAT = "chitchat"
+    SYSTEM_COMMAND = "system_command"
+    OTHER = "other"
+
+def classify_query_intent(query: str) -> Tuple[QueryIntent, str]:
+    """Classifies the intent of a user query using LLM"""
+    classification_prompt = f"""Classify the following user query into one of these categories:
+
+1. GREETING - Simple greetings, pleasantries, or social interactions (hi, hello, how are you, goodbye, thanks)
+2. KNOWLEDGE_QUERY - Questions seeking specific information that would benefit from document retrieval
+3. CHITCHAT - Casual conversation, opinions, or general questions not requiring document search
+4. SYSTEM_COMMAND - Questions about the system itself, its capabilities, or status
+
+Query: "{query}"
+
+Respond with ONLY the category name and a brief reason (max 10 words).
+Format: CATEGORY|reason"""
+
+    try:
+        response = client.chat.complete(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a query intent classifier. Be concise and accurate."},
+                {"role": "user", "content": classification_prompt}
+            ],
+            temperature=0.1
+        )
+        
+        result = response.choices[0].message.content.strip()
+        parts = result.split("|")
+        
+        if len(parts) >= 1:
+            intent_str = parts[0].strip().upper()
+            reason = parts[1].strip() if len(parts) > 1 else "No reason provided"
+            
+            # Map to enum
+            intent_map = {
+                "GREETING": QueryIntent.GREETING,
+                "KNOWLEDGE_QUERY": QueryIntent.KNOWLEDGE_QUERY,
+                "CHITCHAT": QueryIntent.CHITCHAT,
+                "SYSTEM_COMMAND": QueryIntent.SYSTEM_COMMAND
+            }
+            
+            intent = intent_map.get(intent_str, QueryIntent.KNOWLEDGE_QUERY)
+            logger.info(f"Query '{query}' classified as {intent.value}: {reason}")
+            return intent, reason
+            
+    except Exception as e:
+        logger.error(f"Intent classification failed: {e}")
+        # Default to knowledge query to ensure RAG is used when uncertain
+        return QueryIntent.KNOWLEDGE_QUERY, "Classification failed"
+
+def handle_conversational_query(query: str, intent: QueryIntent) -> str:
+    """Handles non-RAG queries directly with the LLM"""
+    system_messages = {
+        QueryIntent.GREETING: "You are a friendly assistant. Respond warmly and briefly to greetings.",
+        QueryIntent.CHITCHAT: "You are a helpful conversational assistant. Keep responses concise and friendly.",
+        QueryIntent.SYSTEM_COMMAND: "You are a system assistant. Explain the PDF RAG system's capabilities when asked."
+    }
+    
+    system_content = system_messages.get(intent, "You are a helpful assistant.")
+    
+    try:
+        response = client.chat.complete(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": query}
+            ],
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error in conversational response: {e}")
+        return "I'm sorry, I encountered an error processing your request."
     
 document_store: Dict[str, Any] = {
     "chunks": [],  # List of {"text": "chunk_text", "source": "filename_chunk_idx"}
@@ -205,8 +285,28 @@ async def query_llm(
     top_k_results: int = Query(5, description="Number of top similar chunks to retrieve for context.")
     ):
     
+    intent, intent_reason = classify_query_intent(prompt)
+    
+    if intent in [QueryIntent.GREETING, QueryIntent.CHITCHAT, QueryIntent.SYSTEM_COMMAND]:
+        response = handle_conversational_query(prompt, intent)
+        return {
+            "response": response,
+            "intent": intent.value,
+            "intent_reason": intent_reason,
+            "used_rag": False
+        }
+    
+    if not document_store["chunks"]:
+        return {
+            "response": "I don't have any documents in my knowledge base yet. Please upload some PDFs first so I can help answer your questions!",
+            "intent": intent.value,
+            "intent_reason": intent_reason,
+            "used_rag": False,
+            "error": "No documents available"
+        }
+    
     try:
-        search_query = transform_query_for_search(prompt, client, model)
+        search_query = transform_query_for_search(prompt)
         query_embedding_response = client.embeddings.create(
             model=embedding_model,
             inputs=[search_query]
@@ -254,10 +354,19 @@ Please provide a comprehensive answer based on the context provided. If the cont
         )
         return {
             "response": chat_response.choices[0].message.content,
+            "intent": intent.value,
+            "intent_reason": intent_reason,
+            "used_rag": True,
             "sources_used": [document_store["chunks"][idx]["source"] for idx in top_k_indices],
             "query_transformed": search_query
         }
         
     except Exception as e:
-        logger.error(f"Error during query processing: {e}")
-        return {"error": f"Query processing failed: {str(e)}"}
+        logger.error(f"Error during RAG query processing: {e}")
+        return {
+            "response": "I encountered an error while searching the knowledge base. Please try again.",
+            "intent": intent.value,
+            "intent_reason": intent_reason,
+            "used_rag": True,
+            "error": str(e)
+        }
